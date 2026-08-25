@@ -1,0 +1,6 @@
+{
+  "name": "PNG to JPG Converter",
+  "description": "桌面工作台式 PNG 转 JPG 批量高保真转换工具，支持多图拖拽导入、无损分辨率与画质保留、透明背景处理及多种目录导出方式。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
