@@ -11,6 +11,7 @@ import {
   inspectPngFile,
   convertPngToJpg,
   getOutputFilename,
+  resolveDynamicTokens,
   runWithConcurrency,
 } from './utils/imageConverter';
 import { createSamplePngFiles } from './utils/sampleGenerator';
@@ -26,6 +27,8 @@ const DEFAULT_CONFIG: ConversionConfig = {
   autoStart: true,
 };
 
+const STORAGE_CONFIG_KEY = 'png2jpg_conversion_config_v1';
+
 const DEFAULT_DIR_CONFIG: DirectoryConfig = {
   mode: 'zip',
   directoryHandle: null,
@@ -33,13 +36,36 @@ const DEFAULT_DIR_CONFIG: DirectoryConfig = {
 
 export function App() {
   const [items, setItems] = useState<ImageItem[]>([]);
-  const [config, setConfig] = useState<ConversionConfig>(DEFAULT_CONFIG);
+  
+  // Initialize config with localStorage persistence
+  const [config, setConfig] = useState<ConversionConfig>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_CONFIG_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { ...DEFAULT_CONFIG, ...parsed };
+      }
+    } catch (e) {
+      console.warn('Failed to load conversion config from localStorage:', e);
+    }
+    return DEFAULT_CONFIG;
+  });
+
   const [dirConfig, setDirConfig] = useState<DirectoryConfig>(DEFAULT_DIR_CONFIG);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [activeCompareItem, setActiveCompareItem] = useState<ImageItem | null>(null);
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isGlobalDragOver, setIsGlobalDragOver] = useState<boolean>(false);
+
+  // Auto persist config to localStorage whenever user modifies it
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(config));
+    } catch (e) {
+      console.warn('Failed to save conversion config to localStorage:', e);
+    }
+  }, [config]);
 
   // Toast state
   const [toast, setToast] = useState<{
@@ -49,6 +75,9 @@ export function App() {
 
   const hiddenFileInputRef = useRef<HTMLInputElement>(null);
   const toastTimeoutRef = useRef<any>(null);
+  const dragCounterRef = useRef<number>(0);
+  const handleFilesSelectedRef = useRef<((files: File[]) => Promise<void>) | null>(null);
+  const lastImportedFilesRef = useRef<{ files: File[]; timestamp: number } | null>(null);
 
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'info') => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -132,6 +161,22 @@ export function App() {
   const handleFilesSelected = async (files: File[]) => {
     if (files.length === 0) return;
 
+    // Guard against duplicate rapid invocation (e.g., bubbling or double-drop)
+    const now = Date.now();
+    if (
+      lastImportedFilesRef.current &&
+      now - lastImportedFilesRef.current.timestamp < 400 &&
+      files.length === lastImportedFilesRef.current.files.length &&
+      files.every(
+        (f, i) =>
+          f.name === lastImportedFilesRef.current?.files[i]?.name &&
+          f.size === lastImportedFilesRef.current?.files[i]?.size
+      )
+    ) {
+      return;
+    }
+    lastImportedFilesRef.current = { files, timestamp: now };
+
     const newItems: ImageItem[] = [];
 
     for (const file of files) {
@@ -146,6 +191,7 @@ export function App() {
           originalWidth: info.width,
           originalHeight: info.height,
           originalUrl: info.url,
+          metadata: info.metadata,
           status: 'idle',
           progress: 0,
         });
@@ -177,6 +223,8 @@ export function App() {
 
     showToast(`已成功导入 ${newItems.length} 个 PNG 图片`, 'info');
   };
+
+  handleFilesSelectedRef.current = handleFilesSelected;
 
   // Start conversion for all pending
   const handleStartAll = () => {
@@ -283,6 +331,121 @@ export function App() {
     setItems((prev) => prev.filter((i) => !selectedIds.has(i.id)));
     setSelectedIds(new Set());
     showToast(`已移除选中的项`, 'info');
+  };
+
+  // Bulk rename selected items respecting custom drag/sort order
+  const handleBulkRename = (
+    selectedItemIds: Set<string>,
+    pattern: string,
+    startIndex = 1,
+    orderedIds?: string[]
+  ) => {
+    const renameMap = new Map<string, string>();
+    const orderToUse =
+      orderedIds && orderedIds.length > 0
+        ? orderedIds.filter((id) => selectedItemIds.has(id))
+        : items.filter((i) => selectedItemIds.has(i.id)).map((i) => i.id);
+
+    let counter = startIndex;
+    for (const id of orderToUse) {
+      const item = items.find((i) => i.id === id);
+      if (item) {
+        const originalBase = item.file.name.replace(/\.[^/.]+$/, '');
+        const newBase = resolveDynamicTokens(pattern, originalBase, counter);
+        renameMap.set(id, newBase);
+        counter++;
+      }
+    }
+
+    setItems((prev) => {
+      // 1. Map updated names
+      const itemMap = new Map<string, ImageItem>();
+      prev.forEach((item) => {
+        if (renameMap.has(item.id)) {
+          const newBase = renameMap.get(item.id)!;
+          itemMap.set(item.id, {
+            ...item,
+            name: newBase.endsWith('.png') ? newBase : `${newBase}.png`,
+            customName: newBase,
+          });
+        } else {
+          itemMap.set(item.id, item);
+        }
+      });
+
+      // 2. If custom order was provided via drag or sort, re-align the selected items in that order
+      if (orderedIds && orderedIds.length > 0) {
+        const orderedSelectedItems = orderedIds
+          .map((id) => itemMap.get(id))
+          .filter(Boolean) as ImageItem[];
+
+        let selIdx = 0;
+        return prev.map((item) => {
+          if (selectedItemIds.has(item.id) && selIdx < orderedSelectedItems.length) {
+            return orderedSelectedItems[selIdx++];
+          }
+          return itemMap.get(item.id) || item;
+        });
+      }
+
+      return prev.map((item) => itemMap.get(item.id) || item);
+    });
+    showToast(`已成功按顺序批量重命名 ${selectedItemIds.size} 项图片`, 'success');
+  };
+
+  // Reorder items completely (e.g. from sort view or drag)
+  const handleReorderItems = (newOrderedItems: ImageItem[]) => {
+    setItems(newOrderedItems);
+    showToast('已更新列表队列顺序', 'info');
+  };
+
+  // Move single item up or down in list
+  const handleMoveItem = (id: string, direction: 'up' | 'down') => {
+    setItems((prev) => {
+      const idx = prev.findIndex((i) => i.id === id);
+      if (idx === -1) return prev;
+      if (direction === 'up' && idx === 0) return prev;
+      if (direction === 'down' && idx === prev.length - 1) return prev;
+
+      const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+      const copy = [...prev];
+      const [removed] = copy.splice(idx, 1);
+      copy.splice(targetIdx, 0, removed);
+      return copy;
+    });
+  };
+
+  // Reset custom names to original file names
+  const handleResetNames = (selectedItemIds: Set<string>) => {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (!selectedItemIds.has(item.id)) return item;
+        return {
+          ...item,
+          name: item.file.name,
+          customName: undefined,
+        };
+      })
+    );
+    showToast(`已将选中的 ${selectedItemIds.size} 项恢复为原始文件名`, 'info');
+  };
+
+  // Single item inline rename
+  const handleRenameSingle = (id: string, newName: string) => {
+    if (!newName.trim()) return;
+    const cleanBase = newName.replace(/\.[^/.]+$/, '').trim();
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              name: `${cleanBase}.png`,
+              customName: cleanBase,
+            }
+          : item
+      )
+    );
+    showToast(`文件名已修改`, 'info');
   };
 
   // Select local output directory using File System Access API
@@ -425,47 +588,81 @@ export function App() {
     };
   }, [config]);
 
-  // Global Window Drag and Drop overlay
+  // Global Window Drag and Drop overlay & tracking
   useEffect(() => {
+    const handleWindowDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+        dragCounterRef.current += 1;
+        setIsGlobalDragOver(true);
+      }
+    };
+
     const handleWindowDragOver = (e: DragEvent) => {
       e.preventDefault();
-      if (e.dataTransfer?.types.includes('Files')) {
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
+      if (!isGlobalDragOver && e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
         setIsGlobalDragOver(true);
       }
     };
 
     const handleWindowDragLeave = (e: DragEvent) => {
       e.preventDefault();
-      // If leaving window
-      if (e.clientX === 0 && e.clientY === 0) {
+      dragCounterRef.current -= 1;
+      if (
+        dragCounterRef.current <= 0 ||
+        e.clientX <= 0 ||
+        e.clientY <= 0 ||
+        e.clientX >= window.innerWidth ||
+        e.clientY >= window.innerHeight ||
+        !e.relatedTarget
+      ) {
+        dragCounterRef.current = 0;
         setIsGlobalDragOver(false);
       }
     };
 
     const handleWindowDrop = (e: DragEvent) => {
       e.preventDefault();
+      dragCounterRef.current = 0;
       setIsGlobalDragOver(false);
+
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         const rawFiles = Array.from(e.dataTransfer.files) as File[];
         const pngFiles = rawFiles.filter(
           (f) => f.type === 'image/png' || f.name.toLowerCase().endsWith('.png')
         );
-        if (pngFiles.length > 0) {
-          handleFilesSelected(pngFiles);
+        if (pngFiles.length > 0 && handleFilesSelectedRef.current) {
+          handleFilesSelectedRef.current(pngFiles);
         }
       }
     };
 
+    const resetDrag = () => {
+      dragCounterRef.current = 0;
+      setIsGlobalDragOver(false);
+    };
+
+    window.addEventListener('dragenter', handleWindowDragEnter);
     window.addEventListener('dragover', handleWindowDragOver);
     window.addEventListener('dragleave', handleWindowDragLeave);
     window.addEventListener('drop', handleWindowDrop);
+    window.addEventListener('dragend', resetDrag);
+    window.addEventListener('blur', resetDrag);
+    document.addEventListener('mouseleave', resetDrag);
 
     return () => {
+      window.removeEventListener('dragenter', handleWindowDragEnter);
       window.removeEventListener('dragover', handleWindowDragOver);
       window.removeEventListener('dragleave', handleWindowDragLeave);
       window.removeEventListener('drop', handleWindowDrop);
+      window.removeEventListener('dragend', resetDrag);
+      window.removeEventListener('blur', resetDrag);
+      document.removeEventListener('mouseleave', resetDrag);
     };
-  }, [config]);
+  }, []);
 
   // Keyboard Shortcuts Listener (Ctrl+O, Ctrl+S, Ctrl+Delete, Ctrl+Enter, Esc)
   useEffect(() => {
@@ -525,7 +722,7 @@ export function App() {
       {isGlobalDragOver && (
         <div
           id="global-drag-overlay"
-          className="fixed inset-0 z-50 bg-amber-500/20 backdrop-blur-md border-4 border-dashed border-amber-400 flex flex-col items-center justify-center pointer-events-none animate-in fade-in"
+          className="fixed inset-0 z-50 bg-amber-500/20 backdrop-blur-md border-4 border-dashed border-amber-400 flex flex-col items-center justify-center pointer-events-none select-none animate-in fade-in"
         >
           <div className="bg-slate-900/90 border border-amber-500/40 px-8 py-6 rounded-3xl shadow-2xl flex flex-col items-center gap-3">
             <Upload className="w-12 h-12 text-amber-400 animate-bounce" />
@@ -610,6 +807,11 @@ export function App() {
               onBatchDownloadSelected={handleBatchDownloadSelected}
               onBatchReconvertSelected={handleBatchReconvertSelected}
               onBatchRemoveSelected={handleBatchRemoveSelected}
+              onBulkRename={handleBulkRename}
+              onResetNames={handleResetNames}
+              onRenameSingle={handleRenameSingle}
+              onReorderItems={handleReorderItems}
+              onMoveItem={handleMoveItem}
               onConvertSingle={handleConvertSingle}
               onRemoveItem={handleRemoveItem}
               onPreviewCompare={(item) => setActiveCompareItem(item)}

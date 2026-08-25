@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Folder,
   FolderCheck,
@@ -268,6 +269,18 @@ export const ConversionSettingsBar: React.FC<ConversionSettingsBarProps> = ({
   const hasDynamicTokens =
     /\{(index(:\d+)?|date|time|timestamp|name)\}/i.test(config.namePrefix) ||
     /\{(index(:\d+)?|date|time|timestamp|name)\}/i.test(config.nameSuffix);
+
+  // Close modal on Escape
+  useEffect(() => {
+    if (!showPresetModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowPresetModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showPresetModal]);
 
   return (
     <section
@@ -740,127 +753,135 @@ export const ConversionSettingsBar: React.FC<ConversionSettingsBarProps> = ({
         )}
       </div>
 
-      {/* Preset Modal */}
-      {showPresetModal && (
-        <div
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setShowPresetModal(false)}
-        >
+      {/* Preset Modal rendered via React Portal with top-level z-index */}
+      {showPresetModal &&
+        createPortal(
           <div
-            className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 shadow-2xl flex flex-col gap-4 text-slate-200"
-            onClick={(e) => e.stopPropagation()}
+            id="preset-save-modal-backdrop"
+            className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150"
+            onClick={() => setShowPresetModal(false)}
           >
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2 font-bold text-white text-base">
-                <BookmarkPlus className="w-5 h-5 text-amber-400" />
-                <span>保存当前配置为预设 (Preset)</span>
-              </div>
-              <button
-                onClick={() => setShowPresetModal(false)}
-                className="text-slate-400 hover:text-white text-sm cursor-pointer p-1"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Current parameters summary */}
-            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs flex flex-col gap-1.5">
-              <div className="font-semibold text-slate-300 mb-1 flex items-center gap-1">
-                <Layers className="w-3.5 h-3.5 text-amber-400" />
-                <span>当前包含的转换与命名参数:</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-slate-400">
-                <div>
-                  画质: <strong className="text-amber-400">{Math.round(config.quality * 100)}%</strong>
+            <div
+              className="bg-slate-900 border border-slate-700/90 rounded-2xl w-full max-w-md p-5 sm:p-6 shadow-2xl flex flex-col gap-4 text-slate-200 animate-in zoom-in-95 duration-150"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2 font-bold text-white text-base">
+                  <BookmarkPlus className="w-5 h-5 text-amber-400" />
+                  <span>保存当前配置为预设 (Preset)</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  底色:
-                  <span
-                    className="w-3.5 h-3.5 rounded-full inline-block border border-slate-600"
-                    style={{ backgroundColor: config.backgroundColor }}
-                  />
-                  <strong className="text-slate-200">{config.backgroundColor}</strong>
-                </div>
-                <div>
-                  格式: <strong className="text-slate-200">.{config.extension}</strong>
-                </div>
-                <div>
-                  前缀:{' '}
-                  <strong className="text-slate-200 font-mono">
-                    {config.namePrefix || '无'}
-                  </strong>
-                </div>
-                <div className="col-span-2">
-                  后缀:{' '}
-                  <strong className="text-slate-200 font-mono">
-                    {config.nameSuffix || '无'}
-                  </strong>
-                </div>
-              </div>
-            </div>
-
-            {/* Name Input Form */}
-            <form onSubmit={handleSaveCurrentAsPreset} className="flex flex-col gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  预设名称:
-                </label>
-                <input
-                  type="text"
-                  required
-                  autoFocus
-                  value={newPresetName}
-                  onChange={(e) => setNewPresetName(e.target.value)}
-                  placeholder="例如: 每日归档_白底100%、电商三位序号"
-                  className="w-full bg-slate-800 text-slate-100 text-xs px-3 py-2 rounded-lg border border-slate-700 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
                 <button
-                  type="button"
                   onClick={() => setShowPresetModal(false)}
-                  className="px-3.5 py-1.5 text-xs rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 cursor-pointer"
+                  className="text-slate-400 hover:text-white text-sm cursor-pointer p-1 rounded-lg hover:bg-slate-800 transition"
+                  title="关闭 (Esc)"
                 >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 text-xs font-bold rounded-lg bg-amber-500 text-slate-950 hover:bg-amber-400 cursor-pointer shadow-sm"
-                >
-                  保存预设
+                  ✕
                 </button>
               </div>
-            </form>
 
-            {/* Existing custom presets list */}
-            {presets.some((p) => !p.isBuiltin) && (
-              <div className="border-t border-slate-800 pt-3">
-                <div className="text-xs font-semibold text-slate-400 mb-2">已保存的自定义预设:</div>
-                <div className="max-h-36 overflow-y-auto divide-y divide-slate-800/80">
-                  {presets
-                    .filter((p) => !p.isBuiltin)
-                    .map((p) => (
-                      <div
-                        key={p.id}
-                        className="py-1.5 flex items-center justify-between text-xs hover:bg-slate-800/40 px-2 rounded"
-                      >
-                        <span className="text-slate-200 font-medium truncate">{p.name}</span>
-                        <button
-                          onClick={(e) => handleDeletePreset(p.id, e)}
-                          className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
-                          title="删除此预设"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
+              {/* Current parameters summary */}
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs flex flex-col gap-2">
+                <div className="font-semibold text-slate-300 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-amber-400" />
+                  <span>当前配置包含以下参数:</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-slate-400 font-mono">
+                  <div>
+                    画质:{' '}
+                    <strong className="text-amber-400">{Math.round(config.quality * 100)}%</strong>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    底色:
+                    <span
+                      className="w-3.5 h-3.5 rounded-full inline-block border border-slate-600 shadow-sm"
+                      style={{ backgroundColor: config.backgroundColor }}
+                    />
+                    <strong className="text-slate-200">{config.backgroundColor}</strong>
+                  </div>
+                  <div>
+                    格式: <strong className="text-slate-200">.{config.extension}</strong>
+                  </div>
+                  <div>
+                    自动: <strong className="text-slate-200">{config.autoStart ? '导入即转' : '手动'}</strong>
+                  </div>
+                  <div>
+                    前缀:{' '}
+                    <strong className="text-slate-200">
+                      {config.namePrefix || '(无)'}
+                    </strong>
+                  </div>
+                  <div>
+                    后缀:{' '}
+                    <strong className="text-slate-200">
+                      {config.nameSuffix || '(无)'}
+                    </strong>
+                  </div>
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-      )}
+
+              {/* Name Input Form */}
+              <form onSubmit={handleSaveCurrentAsPreset} className="flex flex-col gap-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    预设名称:
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    value={newPresetName}
+                    onChange={(e) => setNewPresetName(e.target.value)}
+                    placeholder="例如: 每日归档_白底100%、电商三位序号"
+                    className="w-full bg-slate-800 text-slate-100 text-xs px-3.5 py-2.5 rounded-xl border border-slate-700 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowPresetModal(false)}
+                    className="px-4 py-2 text-xs font-medium rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 cursor-pointer transition"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 text-xs font-bold rounded-xl bg-amber-500 text-slate-950 hover:bg-amber-400 cursor-pointer shadow-md transition"
+                  >
+                    保存预设
+                  </button>
+                </div>
+              </form>
+
+              {/* Existing custom presets list */}
+              {presets.some((p) => !p.isBuiltin) && (
+                <div className="border-t border-slate-800 pt-3">
+                  <div className="text-xs font-semibold text-slate-400 mb-2">已保存的自定义预设:</div>
+                  <div className="max-h-36 overflow-y-auto divide-y divide-slate-800/80">
+                    {presets
+                      .filter((p) => !p.isBuiltin)
+                      .map((p) => (
+                        <div
+                          key={p.id}
+                          className="py-1.5 flex items-center justify-between text-xs hover:bg-slate-800/40 px-2 rounded"
+                        >
+                          <span className="text-slate-200 font-medium truncate">{p.name}</span>
+                          <button
+                            onClick={(e) => handleDeletePreset(p.id, e)}
+                            className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
+                            title="删除此预设"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
     </section>
   );
 };

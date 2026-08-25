@@ -1,21 +1,169 @@
-import { ConversionConfig, ImageItem } from '../types';
+import { ConversionConfig, ImageItem, ImageMetadata } from '../types';
 
 /**
- * Loads an image file and retrieves its native dimensions and Object URL.
+ * Calculates a simplified aspect ratio string (e.g. 16:9, 4:3, 1:1, or 1.78:1)
+ */
+export function calculateAspectRatio(width: number, height: number): string {
+  if (!width || !height) return '-';
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const divisor = gcd(width, height);
+  const rW = width / divisor;
+  const rH = height / divisor;
+
+  // If simple standard ratios
+  if ((rW === 16 && rH === 9) || (rW === 4 && rH === 3) || (rW === 1 && rH === 1) || (rW === 3 && rH === 2) || (rW === 21 && rH === 9) || (rW === 5 && rH === 4)) {
+    return `${rW}:${rH}`;
+  }
+  
+  const ratio = (width / height).toFixed(2);
+  return `${ratio}:1 (${rW}:${rH})`;
+}
+
+/**
+ * Parses binary PNG chunks (IHDR, sRGB, iCCP, pHYs, etc.) to extract rich metadata
+ */
+export async function parsePngBinaryMetadata(file: File): Promise<ImageMetadata> {
+  try {
+    const buffer = await file.slice(0, 65536).arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    // Verify 8-byte PNG signature: 89 50 4E 47 0D 0A 1A 0A
+    const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+    const isPng = pngSignature.every((b, i) => bytes[i] === b);
+
+    if (!isPng) {
+      return {
+        mimeType: file.type || 'image/png',
+        colorSpace: '标准 RGB',
+      };
+    }
+
+    const view = new DataView(buffer);
+    let offset = 8;
+    const metadata: ImageMetadata = {
+      mimeType: 'image/png',
+      colorSpace: '标准 RGB',
+    };
+
+    while (offset + 8 <= bytes.length) {
+      const chunkLength = view.getUint32(offset);
+      const chunkType = String.fromCharCode(
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7]
+      );
+      const dataOffset = offset + 8;
+
+      if (chunkType === 'IHDR' && dataOffset + 13 <= bytes.length) {
+        const width = view.getUint32(dataOffset);
+        const height = view.getUint32(dataOffset + 4);
+        const bitDepth = bytes[dataOffset + 8];
+        const colorType = bytes[dataOffset + 9];
+        const interlaceMethod = bytes[dataOffset + 12];
+
+        metadata.bitDepth = bitDepth;
+        metadata.colorTypeCode = colorType;
+        metadata.interlace = interlaceMethod === 1 ? 'Adam7 隔行扫描' : '逐行扫描 (标准)';
+        metadata.aspectRatio = calculateAspectRatio(width, height);
+        metadata.megapixels = `${((width * height) / 1000000).toFixed(2)} MP`;
+
+        switch (colorType) {
+          case 0:
+            metadata.colorType = '灰度图像 (Grayscale)';
+            metadata.hasAlpha = false;
+            break;
+          case 2:
+            metadata.colorType = '真彩色 RGB (24-bit 无透明)';
+            metadata.hasAlpha = false;
+            break;
+          case 3:
+            metadata.colorType = '索引调色板色 (Indexed 8-bit)';
+            metadata.hasAlpha = false;
+            break;
+          case 4:
+            metadata.colorType = '灰度带透明 (Grayscale + Alpha)';
+            metadata.hasAlpha = true;
+            break;
+          case 6:
+            metadata.colorType = '真彩色 RGBA (32-bit 带透明通道)';
+            metadata.hasAlpha = true;
+            break;
+          default:
+            metadata.colorType = `自定义色彩模式 (${colorType})`;
+            metadata.hasAlpha = false;
+        }
+      } else if (chunkType === 'sRGB') {
+        metadata.colorSpace = 'sRGB 原彩色域 (标准)';
+      } else if (chunkType === 'iCCP') {
+        metadata.colorSpace = 'ICC 嵌入式色彩配置文件';
+      } else if (chunkType === 'tRNS') {
+        metadata.hasAlpha = true;
+        if (!metadata.colorType?.includes('透明')) {
+          metadata.colorType = `${metadata.colorType || '自定义'} (含透明度蒙版)`;
+        }
+      } else if (chunkType === 'pHYs' && dataOffset + 9 <= bytes.length) {
+        const ppuX = view.getUint32(dataOffset);
+        const unit = bytes[dataOffset + 8];
+        if (unit === 1) {
+          // unit is meter -> convert to DPI (1 inch = 0.0254 m)
+          metadata.dpi = Math.round(ppuX * 0.0254);
+        }
+      }
+
+      // Next chunk: length + 4 (length bytes) + 4 (type bytes) + 4 (CRC)
+      offset += 12 + chunkLength;
+      if (chunkType === 'IEND') break;
+    }
+
+    return metadata;
+  } catch (e) {
+    console.warn('Could not parse PNG metadata chunks:', e);
+    return {
+      mimeType: file.type || 'image/png',
+      colorSpace: '标准 RGB',
+    };
+  }
+}
+
+/**
+ * Loads an image file and retrieves its native dimensions, Object URL, and metadata.
  */
 export async function inspectPngFile(file: File): Promise<{
   width: number;
   height: number;
   url: string;
+  metadata: ImageMetadata;
 }> {
   const url = URL.createObjectURL(file);
+  const binaryMetadataPromise = parsePngBinaryMetadata(file);
+
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
+      const width = img.naturalWidth || img.width;
+      const height = img.naturalHeight || img.height;
+      const meta = await binaryMetadataPromise;
+
+      if (!meta.aspectRatio) {
+        meta.aspectRatio = calculateAspectRatio(width, height);
+      }
+      if (!meta.megapixels) {
+        meta.megapixels = `${((width * height) / 1000000).toFixed(2)} MP`;
+      }
+      if (!meta.bitDepth) {
+        meta.bitDepth = 8;
+      }
+      if (!meta.colorType) {
+        meta.colorType = '真彩色 RGBA (32-bit)';
+        meta.hasAlpha = true;
+      }
+
       resolve({
-        width: img.naturalWidth || img.width,
-        height: img.naturalHeight || img.height,
+        width,
+        height,
         url,
+        metadata: meta,
       });
     };
     img.onerror = () => {
