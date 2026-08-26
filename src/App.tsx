@@ -399,6 +399,22 @@ export function App() {
     showToast('已更新列表队列顺序', 'info');
   };
 
+  // Move single item to precise 1-based position
+  const handleMoveItemToPosition = (id: string, targetPosition1Based: number) => {
+    setItems((prev) => {
+      const sourceIndex = prev.findIndex((i) => i.id === id);
+      if (sourceIndex === -1) return prev;
+      const targetIndex = Math.max(0, Math.min(prev.length - 1, targetPosition1Based - 1));
+      if (sourceIndex === targetIndex) return prev;
+
+      const copy = [...prev];
+      const [moved] = copy.splice(sourceIndex, 1);
+      copy.splice(targetIndex, 0, moved);
+      return copy;
+    });
+    showToast(`已将图片精准移动至第 ${targetPosition1Based} 位`, 'success');
+  };
+
   // Move single item up or down in list
   const handleMoveItem = (id: string, direction: 'up' | 'down') => {
     setItems((prev) => {
@@ -812,6 +828,7 @@ export function App() {
               onRenameSingle={handleRenameSingle}
               onReorderItems={handleReorderItems}
               onMoveItem={handleMoveItem}
+              onMoveItemToPosition={handleMoveItemToPosition}
               onConvertSingle={handleConvertSingle}
               onRemoveItem={handleRemoveItem}
               onPreviewCompare={(item) => setActiveCompareItem(item)}

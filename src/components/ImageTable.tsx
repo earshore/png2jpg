@@ -33,7 +33,7 @@ import {
   ChevronDown,
   Shuffle,
   SortAsc,
-  GripVertical,
+  ListOrdered,
 } from 'lucide-react';
 import {
   ImageItem,
@@ -66,6 +66,7 @@ interface ImageTableProps {
   onRenameSingle?: (id: string, newName: string) => void;
   onReorderItems?: (newOrderedItems: ImageItem[]) => void;
   onMoveItem?: (id: string, direction: 'up' | 'down') => void;
+  onMoveItemToPosition?: (id: string, targetPosition1Based: number) => void;
   onConvertSingle: (id: string) => void;
   onRemoveItem: (id: string) => void;
   onPreviewCompare: (item: ImageItem) => void;
@@ -109,6 +110,7 @@ export const ImageTable: React.FC<ImageTableProps> = ({
   onRenameSingle,
   onReorderItems,
   onMoveItem,
+  onMoveItemToPosition,
   onConvertSingle,
   onRemoveItem,
   onPreviewCompare,
@@ -126,28 +128,33 @@ export const ImageTable: React.FC<ImageTableProps> = ({
   const [renameStartIndex, setRenameStartIndex] = useState(1);
   const [modalOrderedItems, setModalOrderedItems] = useState<ImageItem[]>([]);
 
-  // Main table Drag & Drop state
-  const [draggedTableId, setDraggedTableId] = useState<string | null>(null);
-  const [dragOverTableId, setDragOverTableId] = useState<string | null>(null);
-  const [dragOverTablePos, setDragOverTablePos] = useState<'top' | 'bottom' | null>(null);
-
-  // Bulk Rename Modal Drag & Drop state
-  const [draggedModalId, setDraggedModalId] = useState<string | null>(null);
-  const [dragOverModalId, setDragOverModalId] = useState<string | null>(null);
-  const [dragOverModalPos, setDragOverModalPos] = useState<'top' | 'bottom' | null>(null);
-
   // Single inline editing state
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [inlineEditValue, setInlineEditValue] = useState('');
 
-  // Active hover tooltip item with clamped screen viewport coordinates
+  // Manual sequence number editing in Main Table
+  const [editingIndexItemId, setEditingIndexItemId] = useState<string | null>(null);
+  const [editingIndexValue, setEditingIndexValue] = useState('');
+
+  // Manual sequence number editing in Bulk Rename Modal
+  const [editingModalIndexId, setEditingModalIndexId] = useState<string | null>(null);
+  const [editingModalIndexValue, setEditingModalIndexValue] = useState('');
+
+  // Large Image Hover Preview state with viewport clamping (小图悬停放大图预览)
+  const [hoveredImagePreview, setHoveredImagePreview] = useState<{
+    item: ImageItem;
+    x: number;
+    y: number;
+  } | null>(null);
+  const imagePreviewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Active hover PNG Metadata Tooltip item with clamped screen viewport coordinates (分辨率/属性悬停元数据)
   const [hoveredMetadataItem, setHoveredMetadataItem] = useState<{
     item: ImageItem;
     x: number;
     y: number;
   } | null>(null);
-
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hoverMetadataTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Close modals on Escape
   useEffect(() => {
@@ -155,11 +162,13 @@ export const ImageTable: React.FC<ImageTableProps> = ({
       if (e.key === 'Escape') {
         if (showBulkRenameModal) setShowBulkRenameModal(false);
         if (editingItemId) setEditingItemId(null);
+        if (editingIndexItemId) setEditingIndexItemId(null);
+        if (editingModalIndexId) setEditingModalIndexId(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showBulkRenameModal, editingItemId]);
+  }, [showBulkRenameModal, editingItemId, editingIndexItemId, editingModalIndexId]);
 
   if (items.length === 0) return null;
 
@@ -291,72 +300,43 @@ export const ImageTable: React.FC<ImageTableProps> = ({
     }
   }, [showBulkRenameModal, selectedSortedItemsList]);
 
-  // Main Table Drag & Drop handler
-  const handleTableDrop = (targetItem: ImageItem, pos: 'top' | 'bottom') => {
-    if (!draggedTableId || draggedTableId === targetItem.id) {
-      setDraggedTableId(null);
-      setDragOverTableId(null);
-      setDragOverTablePos(null);
-      return;
+  // Manual sequence number submit in Main Table
+  const handleIndexSubmit = (itemId: string) => {
+    const parsed = parseInt(editingIndexValue.trim(), 10);
+    if (!isNaN(parsed) && parsed >= 1 && parsed <= items.length) {
+      if (onMoveItemToPosition) {
+        onMoveItemToPosition(itemId, parsed);
+      } else if (onReorderItems) {
+        const sourceIndex = items.findIndex((i) => i.id === itemId);
+        const targetIndex = parsed - 1;
+        if (sourceIndex !== -1 && sourceIndex !== targetIndex) {
+          const copy = [...items];
+          const [moved] = copy.splice(sourceIndex, 1);
+          copy.splice(targetIndex, 0, moved);
+          onReorderItems(copy);
+        }
+      }
+      setSortField('index');
+      setSortOrder('asc');
     }
-
-    const currentList = [...items];
-    const sourceIndex = currentList.findIndex((i) => i.id === draggedTableId);
-    const targetIndex = currentList.findIndex((i) => i.id === targetItem.id);
-
-    if (sourceIndex === -1 || targetIndex === -1) {
-      setDraggedTableId(null);
-      setDragOverTableId(null);
-      setDragOverTablePos(null);
-      return;
-    }
-
-    const [movedItem] = currentList.splice(sourceIndex, 1);
-    let insertIndex = currentList.findIndex((i) => i.id === targetItem.id);
-    if (pos === 'bottom') {
-      insertIndex += 1;
-    }
-    currentList.splice(insertIndex, 0, movedItem);
-
-    if (onReorderItems) {
-      onReorderItems(currentList);
-    }
-    // Switch to index sort so user immediately sees custom drag order
-    setSortField('index');
-    setSortOrder('asc');
-
-    setDraggedTableId(null);
-    setDragOverTableId(null);
-    setDragOverTablePos(null);
+    setEditingIndexItemId(null);
   };
 
-  // Bulk Rename Modal Drag & Drop handler
-  const handleModalDrop = (targetItem: ImageItem, pos: 'top' | 'bottom') => {
-    if (!draggedModalId || draggedModalId === targetItem.id) {
-      setDraggedModalId(null);
-      setDragOverModalId(null);
-      setDragOverModalPos(null);
-      return;
+  // Manual sequence number jump inside Bulk Rename Modal
+  const handleModalIndexSubmit = (itemId: string) => {
+    const parsed = parseInt(editingModalIndexValue.trim(), 10);
+    if (!isNaN(parsed) && parsed >= 1 && parsed <= modalOrderedItems.length) {
+      const targetIdx = parsed - 1;
+      setModalOrderedItems((prev) => {
+        const sourceIdx = prev.findIndex((i) => i.id === itemId);
+        if (sourceIdx === -1 || sourceIdx === targetIdx) return prev;
+        const copy = [...prev];
+        const [moved] = copy.splice(sourceIdx, 1);
+        copy.splice(targetIdx, 0, moved);
+        return copy;
+      });
     }
-
-    setModalOrderedItems((prev) => {
-      const list = [...prev];
-      const sourceIdx = list.findIndex((i) => i.id === draggedModalId);
-      const targetIdx = list.findIndex((i) => i.id === targetItem.id);
-      if (sourceIdx === -1 || targetIdx === -1) return prev;
-
-      const [moved] = list.splice(sourceIdx, 1);
-      let insertIdx = list.findIndex((i) => i.id === targetItem.id);
-      if (pos === 'bottom') {
-        insertIdx += 1;
-      }
-      list.splice(insertIdx, 0, moved);
-      return list;
-    });
-
-    setDraggedModalId(null);
-    setDragOverModalId(null);
-    setDragOverModalPos(null);
+    setEditingModalIndexId(null);
   };
 
   // Move single item up or down in Bulk Rename Modal
@@ -402,13 +382,50 @@ export const ImageTable: React.FC<ImageTableProps> = ({
   };
 
   /**
-   * Tooltip mouse enter with full viewport boundary clamping (屏幕可视区域保护)
+   * Hover Thumbnail -> Display High-Definition Large Image Floating Preview with Screen Viewport Clamping
    */
-  const handleMouseEnterRow = (e: React.MouseEvent, item: ImageItem) => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+  const handleMouseEnterThumbnail = (e: React.MouseEvent, item: ImageItem) => {
+    if (imagePreviewTimeoutRef.current) clearTimeout(imagePreviewTimeoutRef.current);
+    const rect = e.currentTarget.getBoundingClientRect();
+    const previewWidth = 320;
+    const previewHeight = 350;
+    const margin = 16;
+
+    // Place popup to the right of thumbnail if space permits, otherwise left or center
+    let x = rect.right + 12;
+    if (x + previewWidth > window.innerWidth - margin) {
+      x = rect.left - previewWidth - 12;
+      if (x < margin) {
+        x = Math.max(margin, (window.innerWidth - previewWidth) / 2);
+      }
+    }
+
+    // Align with top of thumbnail and clamp vertically to avoid clipping
+    let y = rect.top - 24;
+    if (y + previewHeight > window.innerHeight - margin) {
+      y = window.innerHeight - previewHeight - margin;
+    }
+    if (y < margin) {
+      y = margin;
+    }
+
+    setHoveredImagePreview({ item, x, y });
+  };
+
+  const handleMouseLeaveThumbnail = () => {
+    imagePreviewTimeoutRef.current = setTimeout(() => {
+      setHoveredImagePreview(null);
+    }, 80);
+  };
+
+  /**
+   * Hover Resolution/Properties -> Display PNG Original Metadata Tooltip (PNG原图元属性保持不变)
+   */
+  const handleMouseEnterMetadata = (e: React.MouseEvent, item: ImageItem) => {
+    if (hoverMetadataTimeoutRef.current) clearTimeout(hoverMetadataTimeoutRef.current);
     const rect = e.currentTarget.getBoundingClientRect();
     const tooltipWidth = 320;
-    const tooltipHeight = 280;
+    const tooltipHeight = 290;
     const margin = 14;
 
     // Horizontal clamping: align near trigger, but keep strictly within window bounds
@@ -427,7 +444,6 @@ export const ImageTable: React.FC<ImageTableProps> = ({
       if (aboveY >= margin) {
         y = aboveY;
       } else {
-        // Clamp inside window viewport
         y = Math.max(margin, window.innerHeight - tooltipHeight - margin);
       }
     }
@@ -435,10 +451,10 @@ export const ImageTable: React.FC<ImageTableProps> = ({
     setHoveredMetadataItem({ item, x, y });
   };
 
-  const handleMouseLeaveRow = () => {
-    hoverTimeoutRef.current = setTimeout(() => {
+  const handleMouseLeaveMetadata = () => {
+    hoverMetadataTimeoutRef.current = setTimeout(() => {
       setHoveredMetadataItem(null);
-    }, 100);
+    }, 80);
   };
 
   return (
@@ -865,61 +881,11 @@ export const ImageTable: React.FC<ImageTableProps> = ({
 
                 const meta = item.metadata;
 
-                const isDragged = draggedTableId === item.id;
-                const isDragOver = dragOverTableId === item.id;
-
                 return (
                   <tr
                     key={item.id}
-                    draggable={!isProcessing}
-                    onDragStart={(e) => {
-                      const target = e.target as HTMLElement;
-                      if (target.closest('input') || target.closest('button')) {
-                        return;
-                      }
-                      e.dataTransfer.setData('text/plain', item.id);
-                      e.dataTransfer.effectAllowed = 'move';
-                      setDraggedTableId(item.id);
-                    }}
-                    onDragOver={(e) => {
-                      if (draggedTableId && draggedTableId !== item.id) {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = 'move';
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const isTop = e.clientY < rect.top + rect.height / 2;
-                        setDragOverTableId(item.id);
-                        setDragOverTablePos(isTop ? 'top' : 'bottom');
-                      }
-                    }}
-                    onDragLeave={(e) => {
-                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                        if (dragOverTableId === item.id) {
-                          setDragOverTableId(null);
-                          setDragOverTablePos(null);
-                        }
-                      }
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (draggedTableId && dragOverTablePos) {
-                        handleTableDrop(item, dragOverTablePos);
-                      }
-                    }}
-                    onDragEnd={() => {
-                      setDraggedTableId(null);
-                      setDragOverTableId(null);
-                      setDragOverTablePos(null);
-                    }}
                     className={`transition-all group relative ${
                       isSelected ? 'bg-amber-500/5' : 'hover:bg-slate-800/40'
-                    } ${isDragged ? 'opacity-30 bg-amber-500/10' : ''} ${
-                      isDragOver && dragOverTablePos === 'top'
-                        ? 'border-t-2 border-amber-400 bg-amber-500/10 shadow-[0_-2px_8px_rgba(245,158,11,0.4)]'
-                        : ''
-                    } ${
-                      isDragOver && dragOverTablePos === 'bottom'
-                        ? 'border-b-2 border-amber-400 bg-amber-500/10 shadow-[0_2px_8px_rgba(245,158,11,0.4)]'
-                        : ''
                     }`}
                   >
                     {/* Row Checkbox */}
@@ -936,33 +902,75 @@ export const ImageTable: React.FC<ImageTableProps> = ({
                       </button>
                     </td>
 
-                    {/* Index Column with Drag Handle & Move Up/Down Controls */}
+                    {/* Index Column with Editable Manual Sequence Number & Move Up/Down Controls */}
                     <td className="py-3 px-2 text-center text-slate-500 font-mono text-xs select-none">
                       <div className="flex items-center justify-center gap-1 group/idx">
-                        <span
-                          className="cursor-grab active:cursor-grabbing text-slate-600 group-hover/idx:text-amber-400 p-0.5 transition"
-                          title="按住拖拽调整队列顺序"
-                        >
-                          <GripVertical className="w-3.5 h-3.5" />
-                        </span>
-                        <span className="w-4 text-center font-bold text-slate-300">
-                          {itemIdxNumber}
-                        </span>
-                        {onMoveItem && (
-                          <div className="flex flex-col opacity-0 group-hover/idx:opacity-100 transition -ml-0.5">
+                        {/* Editable Sequence Number */}
+                        {editingIndexItemId === item.id ? (
+                          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="number"
+                              min={1}
+                              max={items.length}
+                              value={editingIndexValue}
+                              onChange={(e) => setEditingIndexValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleIndexSubmit(item.id);
+                                if (e.key === 'Escape') setEditingIndexItemId(null);
+                              }}
+                              onBlur={() => handleIndexSubmit(item.id)}
+                              autoFocus
+                              className="w-12 h-6 px-1 text-center font-mono font-bold text-xs bg-slate-900 border border-amber-400 text-amber-300 rounded outline-none shadow-sm focus:ring-1 focus:ring-amber-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              placeholder={String(itemIdxNumber)}
+                              title="输入目标序号后按回车确定"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleIndexSubmit(item.id)}
+                              className="p-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
+                              title="确定移动至该序号"
+                            >
+                              <Check className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingIndexItemId(item.id);
+                              setEditingIndexValue(String(itemIdxNumber));
+                            }}
+                            className="min-w-6 px-1.5 py-0.5 rounded font-mono font-bold text-xs text-slate-300 bg-slate-800/80 hover:bg-amber-500/20 hover:text-amber-300 hover:border-amber-500/40 border border-slate-700/60 transition cursor-pointer flex items-center justify-center gap-0.5 group/num"
+                            title="点击输入新序号实现快速精准排序"
+                          >
+                            <span>{itemIdxNumber}</span>
+                            <Edit2 className="w-2.5 h-2.5 opacity-0 group-hover/num:opacity-100 text-amber-400 transition shrink-0" />
+                          </button>
+                        )}
+
+                        {/* Up / Down Micro buttons */}
+                        {onMoveItem && !editingIndexItemId && (
+                          <div className="flex flex-col opacity-0 group-hover/idx:opacity-100 transition -ml-0.5 shrink-0">
                             <button
                               disabled={visibleIdx === 0 || isProcessing}
-                              onClick={() => onMoveItem(item.id, 'up')}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onMoveItem(item.id, 'up');
+                              }}
                               className="text-slate-400 hover:text-amber-400 disabled:opacity-20 cursor-pointer p-0.5"
-                              title="上移"
+                              title="上移一位"
                             >
                               <ChevronUp className="w-3 h-3" />
                             </button>
                             <button
                               disabled={visibleIdx === sortedItems.length - 1 || isProcessing}
-                              onClick={() => onMoveItem(item.id, 'down')}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onMoveItem(item.id, 'down');
+                              }}
                               className="text-slate-400 hover:text-amber-400 disabled:opacity-20 cursor-pointer p-0.5"
-                              title="下移"
+                              title="下移一位"
                             >
                               <ChevronDown className="w-3 h-3" />
                             </button>
@@ -974,13 +982,13 @@ export const ImageTable: React.FC<ImageTableProps> = ({
                     {/* Thumbnail & Name */}
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-3">
-                        {/* Thumbnail with Hover-trigger for Metadata */}
+                        {/* Thumbnail with Hover-trigger for Large Image Preview */}
                         <div
                           className="w-12 h-12 rounded-xl bg-slate-950 border border-slate-700/80 overflow-hidden relative flex items-center justify-center shrink-0 group-hover:border-amber-500/50 transition cursor-pointer shadow-inner"
                           onClick={() => onPreviewCompare(item)}
-                          onMouseEnter={(e) => handleMouseEnterRow(e, item)}
-                          onMouseLeave={handleMouseLeaveRow}
-                          title="点击全屏对比，悬停查看元数据"
+                          onMouseEnter={(e) => handleMouseEnterThumbnail(e, item)}
+                          onMouseLeave={handleMouseLeaveThumbnail}
+                          title="点击全屏对比，悬停预览高清大图"
                         >
                           <img
                             src={item.originalUrl}
@@ -1060,8 +1068,9 @@ export const ImageTable: React.FC<ImageTableProps> = ({
                         {item.originalWidth > 0 ? (
                           <div
                             className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-slate-800/90 text-slate-200 font-mono text-xs border border-slate-700/80 cursor-help hover:border-amber-500/50 hover:text-amber-300 transition"
-                            onMouseEnter={(e) => handleMouseEnterRow(e, item)}
-                            onMouseLeave={handleMouseLeaveRow}
+                            onMouseEnter={(e) => handleMouseEnterMetadata(e, item)}
+                            onMouseLeave={handleMouseLeaveMetadata}
+                            title="悬停查看 PNG 原始元数据属性"
                           >
                             <span>
                               {item.originalWidth} × {item.originalHeight}
@@ -1283,6 +1292,51 @@ export const ImageTable: React.FC<ImageTableProps> = ({
           document.body
         )}
 
+      {/* Floating High-Definition Large Image Preview Portal (小图悬停放大图预览) */}
+      {hoveredImagePreview &&
+        createPortal(
+          <div
+            id="image-large-preview-popup"
+            className="fixed z-[130] bg-slate-900/95 backdrop-blur-md border border-slate-700/90 rounded-2xl shadow-2xl p-3 w-80 text-xs text-slate-200 pointer-events-none animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-2"
+            style={{
+              left: `${hoveredImagePreview.x}px`,
+              top: `${hoveredImagePreview.y}px`,
+            }}
+          >
+            {/* Header info */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-1.5 font-bold text-white truncate max-w-[200px]">
+                <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span className="truncate">{hoveredImagePreview.item.name}</span>
+              </div>
+              <span className="text-[10px] text-amber-400 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 shrink-0">
+                高清大图预览
+              </span>
+            </div>
+
+            {/* HD Image Canvas Box */}
+            <div className="w-full h-52 rounded-xl bg-slate-950/90 border border-slate-800/80 overflow-hidden flex items-center justify-center relative shadow-inner">
+              <img
+                src={hoveredImagePreview.item.originalUrl}
+                alt={hoveredImagePreview.item.name}
+                className="w-full h-full object-contain"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+
+            {/* Footer Summary */}
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 px-1">
+              <span>
+                {hoveredImagePreview.item.originalWidth > 0
+                  ? `${hoveredImagePreview.item.originalWidth} × ${hoveredImagePreview.item.originalHeight} px`
+                  : 'PNG'}
+              </span>
+              <span>{formatBytes(hoveredImagePreview.item.originalSize)}</span>
+            </div>
+          </div>,
+          document.body
+        )}
+
       {/* Bulk Renaming Modal Dialog respecting current sort order */}
       {showBulkRenameModal &&
         createPortal(
@@ -1378,12 +1432,12 @@ export const ImageTable: React.FC<ImageTableProps> = ({
                   ))}
                 </div>
 
-                {/* Interactive Drag & Drop Reorder & Live Preview List */}
+                {/* Sequence Reorder & Live Preview List */}
                 <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950 flex flex-col">
                   <div className="p-2.5 bg-slate-900/90 border-b border-slate-800 text-xs font-semibold text-slate-300 flex flex-wrap items-center justify-between gap-2">
                     <span className="flex items-center gap-1.5 text-amber-300">
-                      <GripVertical className="w-4 h-4 text-amber-400" />
-                      <span>图片重命名序列（可按住 ⠿ 拖拽调整顺序）</span>
+                      <ListOrdered className="w-4 h-4 text-amber-400" />
+                      <span>图片重命名序列（可点击序号精准输入或用 ↑↓ 调整）</span>
                     </span>
 
                     {/* Quick Reorder Toolbar inside modal */}
@@ -1438,73 +1492,63 @@ export const ImageTable: React.FC<ImageTableProps> = ({
                           curIndex
                         );
 
-                        const isItemDragged = draggedModalId === item.id;
-                        const isItemDragOver = dragOverModalId === item.id;
-
                         return (
                           <div
                             key={item.id}
-                            draggable
-                            onDragStart={(e) => {
-                              e.dataTransfer.setData('text/plain', item.id);
-                              e.dataTransfer.effectAllowed = 'move';
-                              setDraggedModalId(item.id);
-                            }}
-                            onDragOver={(e) => {
-                              if (draggedModalId && draggedModalId !== item.id) {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = 'move';
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const isTop = e.clientY < rect.top + rect.height / 2;
-                                setDragOverModalId(item.id);
-                                setDragOverModalPos(isTop ? 'top' : 'bottom');
-                              }
-                            }}
-                            onDragLeave={(e) => {
-                              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                                if (dragOverModalId === item.id) {
-                                  setDragOverModalId(null);
-                                  setDragOverModalPos(null);
-                                }
-                              }
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              if (draggedModalId && dragOverModalPos) {
-                                handleModalDrop(item, dragOverModalPos);
-                              }
-                            }}
-                            onDragEnd={() => {
-                              setDraggedModalId(null);
-                              setDragOverModalId(null);
-                              setDragOverModalPos(null);
-                            }}
-                            className={`p-2 sm:p-2.5 flex items-center justify-between gap-2.5 transition-all group select-none ${
-                              isItemDragged ? 'opacity-30 bg-amber-500/10' : 'hover:bg-slate-900/60'
-                            } ${
-                              isItemDragOver && dragOverModalPos === 'top'
-                                ? 'border-t-2 border-amber-400 bg-amber-500/10 shadow-[0_-2px_6px_rgba(245,158,11,0.4)]'
-                                : ''
-                            } ${
-                              isItemDragOver && dragOverModalPos === 'bottom'
-                                ? 'border-b-2 border-amber-400 bg-amber-500/10 shadow-[0_2px_6px_rgba(245,158,11,0.4)]'
-                                : ''
-                            }`}
+                            className="p-2 sm:p-2.5 flex items-center justify-between gap-2.5 transition-all group hover:bg-slate-900/60"
                           >
-                            {/* Left: Drag Handle, Sequence Number & Thumbnail */}
+                            {/* Left: Sequence Number, Thumbnail & Filename */}
                             <div className="flex items-center gap-2 min-w-0 flex-1">
-                              <span
-                                className="p-0.5 cursor-grab active:cursor-grabbing text-slate-600 hover:text-amber-400 transition shrink-0"
-                                title="按住拖拽排序"
+                              {/* Editable Modal Sequence Number */}
+                              {editingModalIndexId === item.id ? (
+                                <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={modalOrderedItems.length}
+                                    value={editingModalIndexValue}
+                                    onChange={(e) => setEditingModalIndexValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') handleModalIndexSubmit(item.id);
+                                      if (e.key === 'Escape') setEditingModalIndexId(null);
+                                    }}
+                                    onBlur={() => handleModalIndexSubmit(item.id)}
+                                    autoFocus
+                                    className="w-11 h-5 px-1 text-center font-mono font-bold text-[11px] bg-slate-900 border border-amber-400 text-amber-300 rounded outline-none shadow-sm focus:ring-1 focus:ring-amber-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    placeholder={String(idx + 1)}
+                                    title="输入新序号(1~N)后按回车确定"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleModalIndexSubmit(item.id)}
+                                    className="p-0.5 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
+                                    title="确定修改序号"
+                                  >
+                                    <Check className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingModalIndexId(item.id);
+                                    setEditingModalIndexValue(String(idx + 1));
+                                  }}
+                                  className="text-[10px] text-amber-400 font-bold bg-amber-500/10 hover:bg-amber-500/20 px-1.5 py-0.5 rounded border border-amber-500/30 shrink-0 cursor-pointer flex items-center gap-0.5 group/mnum transition"
+                                  title="点击手动输入序号快速精准重排"
+                                >
+                                  <span>#{curIndex}</span>
+                                  <Edit2 className="w-2 h-2 opacity-0 group-hover/mnum:opacity-100 text-amber-400 transition shrink-0" />
+                                </button>
+                              )}
+
+                              <div
+                                className="w-7 h-7 rounded-md bg-slate-900 border border-slate-700/80 overflow-hidden shrink-0 cursor-pointer hover:border-amber-500/60 transition"
+                                onMouseEnter={(e) => handleMouseEnterThumbnail(e, item)}
+                                onMouseLeave={handleMouseLeaveThumbnail}
+                                title="悬停预览大图"
                               >
-                                <GripVertical className="w-3.5 h-3.5" />
-                              </span>
-
-                              <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 shrink-0">
-                                #{curIndex}
-                              </span>
-
-                              <div className="w-7 h-7 rounded-md bg-slate-900 border border-slate-700/80 overflow-hidden shrink-0">
                                 <img
                                   src={item.originalUrl}
                                   alt={item.name}
